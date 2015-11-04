@@ -7,6 +7,22 @@
 #include <math.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <getopt.h>
+#include <linux/videodev2.h>
+
+static struct option long_options[] = {
+    {"input",     required_argument, 0,     'i' },
+    {"width",     required_argument, 0,     'w' },
+    {"meta",      no_argument,       0,     'm' },
+    {"format",    required_argument, 0,     'f' },
+    {"help",      no_argument,       0,     'h' },
+    {0, 0, 0, 0 }
+};
+
+static const char usage[] = "usage:\n\toptflow -i input_file -w width -f"
+                            "pix_format [-m]\n -m option indicates the"
+                            "presence of metadatas\n\n";
 
 struct __attribute__((packed)) metadata {
     uint32_t timestamp;
@@ -14,6 +30,19 @@ struct __attribute__((packed)) metadata {
     float y;
     float z;
 };
+
+struct metadata empty_meta = {0, 0, 0, 0};
+
+uint32_t char2fmt(const char *strfmt)
+{
+    if (!strcmp(strfmt, "NV12")) {
+        return V4L2_PIX_FMT_NV12;
+    } else if (!strcmp(strfmt, "GREY")) {
+        return V4L2_PIX_FMT_GREY;
+    } else {
+        return 0;
+    }
+}
 
 #define SEARCH_SIZE 4 // maximum offset to search: 4 + 1/2 pixels
 #define NUM_BLOCKS  6 // x & y number of tiles to check
@@ -331,34 +360,81 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
 
 int main(int argc, char **argv)
 {
-    int fd;
+    int fd = -1;
+    int c;
+    uint32_t fmt;
+    const char *in_path = NULL;
     uint8_t *frame = NULL;
     uint8_t *last_frame = NULL;
     uint32_t frame_size;
     uint32_t width;
-    struct metadata *meta;
+    struct metadata *meta = &empty_meta;
     struct metadata *last_meta;
     float flow_x, flow_y;
     uint8_t qual;
+    bool have_meta;
 
-    if (argc != 3) {
-        fprintf(stderr, "usage : optflow file.bin image_width\n");
-        return 0;
+    while (1) {
+
+        c = getopt_long(argc, argv, "i:w:mf:h", long_options, NULL);
+        if (c == -1)
+            break;
+
+        switch (c) {
+        case 'i':
+            in_path = optarg;
+            break;
+        case 'w':
+            width = strtoul(optarg, NULL, 10);
+            break;
+        case 'm':
+            have_meta = true;
+            break;
+        case 'f':
+            fmt = char2fmt(optarg);
+            break;
+        case 'h':
+            printf(usage);
+            goto end;
+        case '?':
+            printf(usage);
+            goto end;
+        default:
+            fprintf(stderr, "bad option parsed by getopt : %d\n", c);
+            goto end;
+        }
     }
 
-    fd = open(argv[1], O_RDONLY);
+    if (optind < argc) {
+        fprintf(stderr, "wrong option in arguments: ");
+        while (optind < argc)
+            printf("%s", argv[optind++]);
+        printf("\n");
+    }
+
+    fd = open(in_path, O_RDONLY);
     if (fd == -1) {
-        fprintf(stderr, "can't open file %s\n", argv[1]);
-        return 0;
+        fprintf(stderr, "can't open file %s\n", in_path);
+        goto end;
     }
-    width = strtoul(argv[2], NULL, 10);
-
     if (width == 0 || width > 240) {
         fprintf(stderr, "width must be between 0 and 240\n");
-        return 0;
+        goto end;
     }
 
-    frame_size = width*width*3/2 + sizeof(struct metadata);
+    if ((fmt != V4L2_PIX_FMT_NV12) && (fmt != V4L2_PIX_FMT_GREY)) {
+        fprintf(stderr, "bad format %u\n", fmt);
+        goto end;
+    }
+
+    frame_size = width * width;
+    if (fmt == V4L2_PIX_FMT_NV12) {
+        frame_size = frame_size * 3 / 2;
+    }
+    if (have_meta) {
+        frame_size += sizeof(struct metadata);
+    }
+
     while (1) {
         size_t bytes_read;
         frame = (uint8_t *) malloc(frame_size);
@@ -369,7 +445,9 @@ int main(int argc, char **argv)
         }
 
         bytes_read = read(fd, frame, frame_size);
-        meta = (struct metadata *) (frame + width * width * 3/2);
+
+        if (have_meta)
+            meta = (struct metadata *) (frame + frame_size - sizeof(struct metadata));
         
         if (bytes_read < frame_size) {
             break;
@@ -390,6 +468,7 @@ loop:
         last_meta = meta;
     }
 
+end:
     if (last_frame != 0)
         free(last_frame);
     if (frame != 0)
