@@ -48,7 +48,7 @@ uint32_t char2fmt(const char *strfmt)
 #define NUM_BLOCKS  6 // x & y number of tiles to check
 const float _bottom_flow_feature_threshold = 30;
 const float _bottom_flow_value_threshold = 5000;
-const float _focal_length_px = 2.5 / (3.6 * 2) * 1000.0f;
+const float _focal_length_millipx = 2.5 / (3.6 * 2.0 * 240 / 64);
 
 /**
  * @brief Compute the average pixel gradient of all horizontal and vertical steps
@@ -197,7 +197,6 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
         /* constants */
     const int16_t winmin = -SEARCH_SIZE;
     const int16_t winmax = SEARCH_SIZE;
-    const uint16_t hist_size = 2*(winmax-winmin+1)+1;
 
     /* variables */
     /* pixLo is SEARCH_SIZE + 1 because if we need to evaluate
@@ -212,8 +211,6 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
     uint16_t pixStep = (pixHi - pixLo) / NUM_BLOCKS + 1;
     uint16_t i, j;
     uint32_t acc[2*SEARCH_SIZE]; // subpixels
-    uint16_t histx[hist_size]; // counter for x shift
-    uint16_t histy[hist_size]; // counter for y shift
     int8_t  dirsx[NUM_BLOCKS*NUM_BLOCKS]; // shift directions in x
     int8_t  dirsy[NUM_BLOCKS*NUM_BLOCKS]; // shift directions in y
     uint8_t  subdirs[NUM_BLOCKS*NUM_BLOCKS]; // shift directions of best subpixels
@@ -222,9 +219,6 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
     uint16_t meancount = 0;
     float histflowx = 0.0f;
     float histflowy = 0.0f;
-
-    /* initialize with 0 */
-    for (j = 0; j < hist_size; j++) { histx[j] = 0; histy[j] = 0; }
 
     /* iterate over all patterns
      */
@@ -282,45 +276,17 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
                 dirsy[meancount] = sumy;
                 subdirs[meancount] = mindir;
                 meancount++;
-
-                /* feed histogram filter*/
-                uint8_t hist_index_x = 2*sumx + (winmax-winmin+1);
-                if (mindir == 0 || mindir == 1 || mindir == 7) hist_index_x += 1;
-                if (mindir == 3 || mindir == 4 || mindir == 5) hist_index_x += -1;
-                uint8_t hist_index_y = 2*sumy + (winmax-winmin+1);
-                if (mindir == 5 || mindir == 6 || mindir == 7) hist_index_y += -1;
-                if (mindir == 1 || mindir == 2 || mindir == 3) hist_index_y += 1;
-
-                histx[hist_index_x]++;
-                histy[hist_index_y]++;
-
             }
         }
     }
 
     /* evaluate flow calculation */
-    if (meancount > 10)
+    if (meancount > NUM_BLOCKS*NUM_BLOCKS/2)
     {
         meanflowx /= meancount;
         meanflowy /= meancount;
 
-        uint16_t maxvaluex = 0;
-        uint16_t maxvaluey = 0;
-
-        /* position of maximal histogram peek */
-        for (j = 0; j < hist_size; j++)
-        {
-            if (histx[j] > maxvaluex)
-            {
-                maxvaluex = histx[j];
-            }
-            if (histy[j] > maxvaluey)
-            {
-                maxvaluey = histy[j];
-            }
-        }
-
-          /* use average of accepted flow values */
+        /* use average of accepted flow values */
         uint32_t meancount_x = 0;
         uint32_t meancount_y = 0;
 
@@ -372,7 +338,7 @@ int main(int argc, char **argv)
     struct metadata *last_meta;
     float flow_x, flow_y;
     uint8_t qual;
-    bool have_meta;
+    bool have_meta = false;
 
     while (1) {
 
@@ -456,8 +422,10 @@ int main(int argc, char **argv)
         } else {
             qual = compute_flow(width, last_frame, frame, meta->timestamp - 
                     last_meta->timestamp, meta->x, meta->y, &flow_x, &flow_y);
-            //flow_x /= _focal_length_px;
-            //flow_y /= _focal_length_px;
+            flow_x = flow_x / _focal_length_millipx /
+                ((float)(meta->timestamp - last_meta->timestamp) / 1000.0f);
+            flow_y = flow_y / _focal_length_millipx /
+                ((float)(meta->timestamp - last_meta->timestamp) / 1000.0f);
             printf("flowx = %f, GyrX = %f, flowy = %f, GyrY = %f, qual %u\n",
                     flow_x, meta->x, flow_y, meta->y, qual);
         }
