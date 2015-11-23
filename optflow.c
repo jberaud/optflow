@@ -460,10 +460,12 @@ int main(int argc, char **argv)
         } else {
             qual = compute_flow(width, last_frame, frame, meta->timestamp - 
                     last_meta->timestamp, meta->x, meta->y, &flow_x, &flow_y);
-            flow_x = flow_x / _focal_length_millipx /
-                ((float)(meta->timestamp - last_meta->timestamp) / 1000.0f);
-            flow_y = flow_y / _focal_length_millipx /
-                ((float)(meta->timestamp - last_meta->timestamp) / 1000.0f);
+            if (meta->timestamp != 0) {
+                flow_x = flow_x / _focal_length_millipx /
+                    ((float)(meta->timestamp - last_meta->timestamp) / 1000.0f);
+                flow_y = flow_y / _focal_length_millipx /
+                    ((float)(meta->timestamp - last_meta->timestamp) / 1000.0f);
+            }
             printf("flowx = %f, GyrX = %f, flowy = %f, GyrY = %f, qual %u\n",
                     flow_x, meta->x, flow_y, meta->y, qual);
         }
