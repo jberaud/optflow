@@ -69,6 +69,10 @@ struct __attribute__((packed)) metadata {
     float z;
 };
 
+static uint32_t count_samples;
+static float mean_flow_x;
+static float mean_flow_y;
+
 struct metadata empty_meta = {0, 0, 0, 0};
 
 uint32_t char2fmt(const char *strfmt)
@@ -86,7 +90,9 @@ uint32_t char2fmt(const char *strfmt)
 #define NUM_BLOCKS  6 // x & y number of tiles to check
 const float _bottom_flow_feature_threshold = 30;
 const float _bottom_flow_value_threshold = 5000;
-const float _focal_length_millipx = 2.5 / (3.6 * 2.0 * 240 / 64);
+const float _focal_length_millipx = 2.21 / (3.6 * 2.0 * 240 / 64);
+static const int _search_size = SEARCH_SIZE;
+
 
 /**
  * @brief Compute the average pixel gradient of all horizontal and vertical steps
@@ -232,26 +238,21 @@ static inline uint32_t compute_subpixel(uint8_t *image1, uint8_t *image2, uint16
 uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_time,
         float x_rate, float y_rate, float *pixel_flow_x, float *pixel_flow_y)
 {
-        /* constants */
-    const int16_t winmin = -SEARCH_SIZE;
-    const int16_t winmax = SEARCH_SIZE;
+    int _width = 64;
+    int _num_blocks = _width / (2 * _search_size + 3);
+    int _pixlo = _search_size + 1;
+    int _pixhi = _width - 1 - (_search_size + 1);
+    int _bytesperline = 64;
+    int _pixstep = ceil(((float)(_pixhi - _pixlo)) / _num_blocks);
 
-    /* variables */
-    /* pixLo is SEARCH_SIZE + 1 because if we need to evaluate
-     * the subpixels up/left of the first pixel, the index
-     * will be equal to pixLo - SEARCH_SIZE -1
-     * idem if we need to evaluate the subpixels down/right
-     * the index will be equal to pixHi + SEARCH_SIZE + 1
-     * which needs to remain inferior to width - 1
-     */
-    uint16_t pixLo = SEARCH_SIZE + 1;
-    uint16_t pixHi = width - 1 - (SEARCH_SIZE + 1);
-    uint16_t pixStep = (pixHi - pixLo) / NUM_BLOCKS + 1;
+    /* constants */
+    const int16_t winmin = -_search_size;
+    const int16_t winmax = _search_size;
     uint16_t i, j;
-    uint32_t acc[2*SEARCH_SIZE]; // subpixels
-    int8_t  dirsx[NUM_BLOCKS*NUM_BLOCKS]; // shift directions in x
-    int8_t  dirsy[NUM_BLOCKS*NUM_BLOCKS]; // shift directions in y
-    uint8_t  subdirs[NUM_BLOCKS*NUM_BLOCKS]; // shift directions of best subpixels
+    uint32_t acc[2*_search_size];
+    int8_t dirsx[_num_blocks*_num_blocks];
+    int8_t dirsy[_num_blocks*_num_blocks];
+    uint8_t subdirs[_num_blocks*_num_blocks];
     float meanflowx = 0.0f;
     float meanflowy = 0.0f;
     uint16_t meancount = 0;
@@ -260,14 +261,12 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
 
     /* iterate over all patterns
      */
-    for (j = pixLo; j < pixHi; j += pixStep)
-    {
-        for (i = pixLo; i < pixHi; i += pixStep)
-        {
+    for (j = _pixlo; j < _pixhi; j += _pixstep) {
+        for (i = _pixlo; i < _pixhi; i += _pixstep) {
             /* test pixel if it is suitable for flow tracking */
-            uint32_t diff = compute_diff(image1, i, j, (uint16_t) width, SEARCH_SIZE);
-            if (diff < _bottom_flow_feature_threshold)
-            {
+            uint32_t diff = compute_diff(image1, i, j, (uint16_t) _bytesperline,
+                                         _search_size);
+            if (diff < _bottom_flow_feature_threshold) {
                 continue;
             }
 
@@ -276,14 +275,13 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
             int8_t sumy = 0;
             int8_t ii, jj;
 
-            for (jj = winmin; jj <= winmax; jj++)
-            {
-                for (ii = winmin; ii <= winmax; ii++)
-                {
-                    uint32_t temp_dist = compute_sad(image1, image2, i, j, i + ii, j + jj,
-                            (uint16_t) width, 2 * SEARCH_SIZE);
-                    if (temp_dist < dist)
-                    {
+            for (jj = winmin; jj <= winmax; jj++) {
+                for (ii = winmin; ii <= winmax; ii++) {
+                    uint32_t temp_dist = compute_sad(image1, image2, i, j,
+                                                     i + ii, j + jj,
+                                                     (uint16_t)_bytesperline,
+                                                     2 * _search_size);
+                    if (temp_dist < dist) {
                         sumx = ii;
                         sumy = jj;
                         dist = temp_dist;
@@ -291,20 +289,18 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
                 }
             }
 
-            /* acceptance SAD distance threshhold */
-            if (dist < _bottom_flow_value_threshold)
-            {
-                meanflowx += (float) sumx;
-                meanflowy += (float) sumy;
+            /* acceptance SAD distance threshold */
+            if (dist < _bottom_flow_value_threshold) {
+                meanflowx += (float)sumx;
+                meanflowy += (float)sumy;
 
-                compute_subpixel(image1, image2, i, j, i + sumx, j + sumy, acc, (uint16_t) width,
-                        2 * SEARCH_SIZE);
+                compute_subpixel(image1, image2, i, j, i + sumx, j + sumy,
+                                 acc, (uint16_t) _bytesperline,
+                                 2 * _search_size);
                 uint32_t mindist = dist; // best SAD until now
                 uint8_t mindir = 8; // direction 8 for no direction
-                for(uint8_t k = 0; k < 2 * SEARCH_SIZE; k++)
-                {
-                    if (acc[k] < mindist)
-                    {
+                for (uint8_t k = 0; k < 2 * _search_size; k++) {
+                    if (acc[k] < mindist) {
                         // SAD becomes better in direction k
                         mindist = acc[k];
                         mindir = k;
@@ -313,14 +309,14 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
                 dirsx[meancount] = sumx;
                 dirsy[meancount] = sumy;
                 subdirs[meancount] = mindir;
-                meancount++;
+                printf("mean %d sumx %d sumy %d mindir %d\n", meancount, sumx, sumy, mindir);
+                meancount++;                    
             }
         }
     }
 
     /* evaluate flow calculation */
-    if (meancount > NUM_BLOCKS*NUM_BLOCKS/2)
-    {
+    if (meancount > _num_blocks * _num_blocks / 2) {
         meanflowx /= meancount;
         meanflowy /= meancount;
 
@@ -328,17 +324,28 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
         uint32_t meancount_x = 0;
         uint32_t meancount_y = 0;
 
-        for (uint16_t h = 0; h < meancount; h++)
-        {
+        for (uint16_t h = 0; h < meancount; h++) {
             float subdirx = 0.0f;
-            if (subdirs[h] == 0 || subdirs[h] == 1 || subdirs[h] == 7) subdirx = 0.5f;
-            if (subdirs[h] == 3 || subdirs[h] == 4 || subdirs[h] == 5) subdirx = -0.5f;
+            if (subdirs[h] == 0 || subdirs[h] == 1 || subdirs[h] == 7) {
+                printf("subdir %u subdirx +0.5\n", h);
+                subdirx = 0.5f;
+            }
+            if (subdirs[h] == 3 || subdirs[h] == 4 || subdirs[h] == 5) {
+                printf("subdir %u subdirx -0.5\n", h);
+                subdirx = -0.5f;
+            }
             histflowx += (float)dirsx[h] + subdirx;
             meancount_x++;
 
             float subdiry = 0.0f;
-            if (subdirs[h] == 5 || subdirs[h] == 6 || subdirs[h] == 7) subdiry = -0.5f;
-            if (subdirs[h] == 1 || subdirs[h] == 2 || subdirs[h] == 3) subdiry = 0.5f;
+            if (subdirs[h] == 5 || subdirs[h] == 6 || subdirs[h] == 7) {
+                printf("subdir %u subdiry -0.5\n", h);
+                subdiry = -0.5f;
+            }
+            if (subdirs[h] == 1 || subdirs[h] == 2 || subdirs[h] == 3) {
+                printf("subdir %u subdiry +0.5\n", h);
+                subdiry = 0.5f;
+            }
             histflowy += (float)dirsy[h] + subdiry;
             meancount_y++;
         }
@@ -348,16 +355,14 @@ uint8_t compute_flow(uint32_t width, void *image1, void *image2, uint32_t delta_
 
         *pixel_flow_x = histflowx;
         *pixel_flow_y = histflowy;
-    }
-    else
-    {
+    } else {
         *pixel_flow_x = 0.0f;
         *pixel_flow_y = 0.0f;
         return 0;
     }
 
     /* calc quality */
-    uint8_t qual = (uint8_t)(meancount * 255 / (NUM_BLOCKS*NUM_BLOCKS));
+    uint8_t qual = (uint8_t)(meancount * 255 / (_num_blocks*_num_blocks));
 
     return qual;
 }
@@ -465,10 +470,18 @@ int main(int argc, char **argv)
                     ((float)(meta->timestamp - last_meta->timestamp) / 1000.0f);
                 flow_y = flow_y / _focal_length_millipx /
                     ((float)(meta->timestamp - last_meta->timestamp) / 1000.0f);
+                meta->x *= 1000.0f / (((float)(meta->timestamp - last_meta->timestamp) / 1000.0f));
+                meta->y *= 1000.0f / (((float)(meta->timestamp - last_meta->timestamp) / 1000.0f));
+                mean_flow_x = ((mean_flow_x * count_samples) + flow_x)/(count_samples + 1);
+                mean_flow_y = ((mean_flow_y * count_samples) + flow_y)/(count_samples + 1);
             }
+            mean_flow_x = ((mean_flow_x * count_samples) + flow_x)/(count_samples + 1);
+            mean_flow_y = ((mean_flow_y * count_samples) + flow_y)/(count_samples + 1);
+            count_samples++;
             printf("flowx = %f, GyrX = %f, flowy = %f, GyrY = %f, qual %u\n",
                     flow_x, meta->x, flow_y, meta->y, qual);
         }
+        printf("mean_flow_x %f - mean_flow_y %f, count_samples %u\n", mean_flow_x, mean_flow_y, count_samples);
 
         free(last_frame);
 loop:
